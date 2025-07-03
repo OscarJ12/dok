@@ -35,6 +35,16 @@ typedef enum {
     STATE_UNDOCUMENTED
 } nav_state_t;
 
+// Parameter information - MOVED BEFORE function_t
+typedef struct {
+    char name[MAX_NAME_LENGTH];
+    char type[MAX_NAME_LENGTH];
+    char description[MAX_CONTENT_LENGTH];
+    int is_pointer;
+    int is_array;
+    int is_const;
+} parameter_t;
+
 // Function information
 typedef struct {
     char name[MAX_NAME_LENGTH];
@@ -48,6 +58,10 @@ typedef struct {
     char example[MAX_CONTENT_LENGTH];
     char notes[MAX_CONTENT_LENGTH];
     int is_documented;
+    // Auto-parsed parameter information
+    parameter_t parsed_params[20];  // Support up to 20 parameters
+    int param_count;
+    char return_type[MAX_NAME_LENGTH];
 } function_t;
 
 // File information
@@ -95,6 +109,10 @@ void clear_screen() {
     printf("\033[2J\033[H");
 }
 
+// Forward declarations
+void parse_function_parameters(const char *signature, function_t *func);
+void generate_parameter_documentation(function_t *func, char *output);
+
 // Utility functions
 void trim_whitespace(char *str) {
     char *end;
@@ -113,6 +131,218 @@ int is_c_file(const char *filename) {
     int len = strlen(filename);
     return (len > 2 && strcmp(filename + len - 2, ".c") == 0) ||
            (len > 2 && strcmp(filename + len - 2, ".h") == 0);
+}
+
+// Parse a single parameter string like "const char *name" or "int count"
+void parse_parameter(const char *param_str, parameter_t *param) {
+    char temp[MAX_NAME_LENGTH];
+    strcpy(temp, param_str);
+    trim_whitespace(temp);
+    
+    // Initialize parameter
+    strcpy(param->name, "");
+    strcpy(param->type, "");
+    strcpy(param->description, "");
+    param->is_pointer = 0;
+    param->is_array = 0;
+    param->is_const = 0;
+    
+    if (strlen(temp) == 0) return;
+    
+    // Check for const keyword
+    if (strncmp(temp, "const ", 6) == 0) {
+        param->is_const = 1;
+        memmove(temp, temp + 6, strlen(temp) - 5);
+        trim_whitespace(temp);
+    }
+    
+    // Find the parameter name (last identifier)
+    char *tokens[10];
+    int token_count = 0;
+    
+    // Make a copy for tokenization
+    char *temp_copy = strdup(temp);
+    char *token = strtok(temp_copy, " \t");
+    while (token && token_count < 10) {
+        tokens[token_count] = strdup(token);
+        token_count++;
+        token = strtok(NULL, " \t");
+    }
+    
+    if (token_count == 0) {
+        free(temp_copy);
+        return;
+    }
+    
+    // Last token is usually the name (unless it's all pointers/arrays)
+    char *potential_name = tokens[token_count - 1];
+    
+    // Handle pointer/array syntax in the name
+    char *name_start = potential_name;
+    while (*name_start == '*') {
+        param->is_pointer = 1;
+        name_start++;
+    }
+    
+    // Check for array syntax
+    char *bracket = strchr(name_start, '[');
+    if (bracket) {
+        param->is_array = 1;
+        *bracket = '\0';  // Remove array part from name
+    }
+    
+    // Extract clean parameter name
+    strcpy(param->name, name_start);
+    
+    // Build type string from remaining tokens
+    char type_str[MAX_NAME_LENGTH] = "";
+    for (int i = 0; i < token_count - 1; i++) {
+        if (strlen(type_str) > 0) strcat(type_str, " ");
+        strcat(type_str, tokens[i]);
+    }
+    
+    // Add back pointer indicators that were in the type part
+    for (int i = 0; i < token_count; i++) {
+        char *ptr_check = tokens[i];
+        while (*ptr_check == '*') {
+            param->is_pointer = 1;
+            ptr_check++;
+        }
+    }
+    
+    strcpy(param->type, type_str);
+    
+    // Generate auto-description based on parameter name and type
+    if (strstr(param->name, "count") || strstr(param->name, "size") || strstr(param->name, "len")) {
+        strcpy(param->description, "Size/count parameter");
+    } else if (strstr(param->name, "buffer") || strstr(param->name, "buf")) {
+        strcpy(param->description, "Buffer for data storage");
+    } else if (strstr(param->name, "filename") || strstr(param->name, "file")) {
+        strcpy(param->description, "File path or name");
+    } else if (strstr(param->name, "callback") || strstr(param->name, "cb")) {
+        strcpy(param->description, "Callback function");
+    } else if (param->is_pointer && strstr(param->type, "char")) {
+        strcpy(param->description, "String parameter");
+    } else if (param->is_pointer) {
+        strcpy(param->description, "Pointer parameter");
+    } else {
+        strcpy(param->description, "Parameter");
+    }
+    
+    // Clean up allocated tokens
+    for (int i = 0; i < token_count; i++) {
+        free(tokens[i]);
+    }
+    free(temp_copy);
+}
+
+// Extract return type from function signature
+void extract_return_type(const char *signature, char *return_type) {
+    char temp[MAX_NAME_LENGTH];
+    strcpy(temp, signature);
+    
+    // Find the function name (before the opening parenthesis)
+    char *paren = strchr(temp, '(');
+    if (!paren) {
+        strcpy(return_type, "void");
+        return;
+    }
+    
+    *paren = '\0';  // Cut off at parenthesis
+    
+    // Go backwards to find the function name
+    char *name_end = paren - 1;
+    while (name_end > temp && (isalnum(*name_end) || *name_end == '_')) {
+        name_end--;
+    }
+    
+    if (name_end <= temp) {
+        strcpy(return_type, "void");
+        return;
+    }
+    
+    *name_end = '\0';  // Cut off function name
+    trim_whitespace(temp);
+    
+    if (strlen(temp) == 0) {
+        strcpy(return_type, "int");  // Default assumption
+    } else {
+        strcpy(return_type, temp);
+    }
+}
+
+// Parse function parameters from signature
+void parse_function_parameters(const char *signature, function_t *func) {
+    func->param_count = 0;
+    
+    // Extract return type
+    extract_return_type(signature, func->return_type);
+    
+    // Find parameter list
+    char *paren_start = strchr(signature, '(');
+    char *paren_end = strrchr(signature, ')');
+    
+    if (!paren_start || !paren_end || paren_end <= paren_start) {
+        return;
+    }
+    
+    // Extract parameter string
+    int param_len = paren_end - paren_start - 1;
+    if (param_len <= 0) return;
+    
+    char param_string[MAX_LINE_LENGTH];
+    strncpy(param_string, paren_start + 1, param_len);
+    param_string[param_len] = '\0';
+    trim_whitespace(param_string);
+    
+    // Handle void parameter list
+    if (strcmp(param_string, "void") == 0 || strlen(param_string) == 0) {
+        return;
+    }
+    
+    // Split by commas and parse each parameter
+    char *param_copy = strdup(param_string);
+    char *param_token = strtok(param_copy, ",");
+    
+    while (param_token && func->param_count < 20) {
+        parse_parameter(param_token, &func->parsed_params[func->param_count]);
+        if (strlen(func->parsed_params[func->param_count].name) > 0) {
+            func->param_count++;
+        }
+        param_token = strtok(NULL, ",");
+    }
+    
+    free(param_copy);
+}
+
+// Generate formatted parameter documentation
+void generate_parameter_documentation(function_t *func, char *output) {
+    if (func->param_count == 0) {
+        strcpy(output, "No parameters");
+        return;
+    }
+    
+    strcpy(output, "");
+    
+    for (int i = 0; i < func->param_count; i++) {
+        parameter_t *param = &func->parsed_params[i];
+        
+        char param_line[MAX_CONTENT_LENGTH];
+        
+        // Format: @param name (type) - description
+        snprintf(param_line, sizeof(param_line), "@param %s (%s%s%s%s) - %s",
+                param->name,
+                param->is_const ? "const " : "",
+                param->type,
+                param->is_pointer ? "*" : "",
+                param->is_array ? "[]" : "",
+                param->description);
+        
+        if (strlen(output) > 0) {
+            strcat(output, "\n");
+        }
+        strcat(output, param_line);
+    }
 }
 
 // C file parsing functions
@@ -201,12 +431,17 @@ void parse_c_file(const char *filepath, source_file_t *file) {
                 func->line_number = line_num;
                 func->is_documented = 0;
                 
+                // Parse function parameters automatically
+                parse_function_parameters(line, func);
+                
                 // Initialize documentation fields
                 strcpy(func->description, "");
-                strcpy(func->parameters, "");
                 strcpy(func->return_value, "");
                 strcpy(func->example, "");
                 strcpy(func->notes, "");
+                
+                // Auto-generate parameter documentation
+                generate_parameter_documentation(func, func->parameters);
                 
                 file->function_count++;
             }
@@ -435,10 +670,31 @@ void display_function_detail() {
     function_t *func = &docs.files[docs.current_file].functions[docs.current_function];
     
     printf(BOLD GREEN "\nFUNCTION: %s\n" RESET, func->name);
-    printf("Press 'e' to edit documentation, 'v' to view source, 'b' to go back\n\n");
+    printf("Press 'e' to edit documentation, 'v' to view source, 'a' to view auto-parsed info, 'b' to go back\n\n");
     
     printf(BOLD CYAN "File: " RESET "%s:%d\n", func->filename, func->line_number);
-    printf(BOLD CYAN "Signature: " RESET "%s\n\n", func->signature);
+    printf(BOLD CYAN "Signature: " RESET "%s\n", func->signature);
+    
+    // Show auto-parsed information
+    if (func->param_count > 0) {
+        printf(BOLD CYAN "Return Type: " RESET "%s\n", func->return_type);
+        printf(BOLD CYAN "Parameters (%d): " RESET, func->param_count);
+        for (int i = 0; i < func->param_count; i++) {
+            parameter_t *param = &func->parsed_params[i];
+            printf("%s%s%s%s %s",
+                   param->is_const ? "const " : "",
+                   param->type,
+                   param->is_pointer ? "*" : "",
+                   param->is_array ? "[]" : "",
+                   param->name);
+            if (i < func->param_count - 1) printf(", ");
+        }
+        printf("\n");
+    } else {
+        printf(BOLD CYAN "Parameters: " RESET "None\n");
+    }
+    
+    printf("\n");
     
     if (func->is_documented) {
         if (strlen(func->description) > 0) {
@@ -458,7 +714,46 @@ void display_function_detail() {
         }
     } else {
         printf(YELLOW "This function is not yet documented. Press 'e' to add documentation.\n" RESET);
+        printf(BLUE "Auto-generated parameter documentation is available as a starting point.\n" RESET);
     }
+}
+
+void display_auto_parsed_info() {
+    clear_screen();
+    display_header();
+    
+    function_t *func = &docs.files[docs.current_file].functions[docs.current_function];
+    
+    printf(BOLD GREEN "\nAUTO-PARSED INFORMATION: %s\n" RESET, func->name);
+    printf("Press any key to go back\n\n");
+    
+    printf(BOLD CYAN "Return Type: " RESET "%s\n\n", func->return_type);
+    
+    if (func->param_count > 0) {
+        printf(BOLD CYAN "Parsed Parameters:\n" RESET);
+        for (int i = 0; i < func->param_count; i++) {
+            parameter_t *param = &func->parsed_params[i];
+            printf("  %d. " BOLD "%s" RESET "\n", i + 1, param->name);
+            printf("     Type: %s%s%s%s\n",
+                   param->is_const ? "const " : "",
+                   param->type,
+                   param->is_pointer ? "*" : "",
+                   param->is_array ? "[]" : "");
+            printf("     Auto-description: %s\n", param->description);
+            printf("     Flags: %s%s%s\n",
+                   param->is_const ? "const " : "",
+                   param->is_pointer ? "pointer " : "",
+                   param->is_array ? "array " : "");
+            printf("\n");
+        }
+    } else {
+        printf(BOLD CYAN "Parameters: " RESET "None (void function)\n");
+    }
+    
+    printf(BOLD CYAN "Auto-generated parameter documentation:\n" RESET);
+    printf("%s\n", func->parameters);
+    
+    getchar();
 }
 
 void display_search_results() {
@@ -809,6 +1104,9 @@ void handle_input() {
                     break;
                 case 'e':
                     edit_function_documentation(&docs.files[docs.current_file].functions[docs.current_function]);
+                    break;
+                case 'a':
+                    display_auto_parsed_info();
                     break;
                 case 'v':
                     clear_screen();
