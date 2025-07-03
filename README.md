@@ -1,6 +1,7 @@
 # DOK - Dynamic C Documentation System
 
 A terminal-based interactive documentation tool for C projects. DOK helps you create, manage, and export comprehensive documentation for your C functions with an intuitive interface.
+Created as a practical tool for C developers who want to maintain good documentation practices without leaving the terminal.
 
 ## Features
 
@@ -107,7 +108,3 @@ Use ↑/↓ to navigate, ENTER to view functions, 'p' to print file docs, 'P' to
 ## License
 
 This project is open source. Feel free to use and modify as needed.
-
-## Author
-
-Created as a practical tool for C developers who want to maintain good documentation practices without leaving the terminal.
