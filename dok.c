@@ -281,6 +281,16 @@ void extract_return_type(const char *signature, char *return_type) {
 void parse_function_parameters(const char *signature, function_t *func) {
     func->param_count = 0;
     
+    // Initialize all parameters to empty
+    for (int i = 0; i < 10; i++) {
+        strcpy(func->parsed_params[i].name, "");
+        strcpy(func->parsed_params[i].type, "");
+        strcpy(func->parsed_params[i].description, "");
+        func->parsed_params[i].is_pointer = 0;
+        func->parsed_params[i].is_array = 0;
+        func->parsed_params[i].is_const = 0;
+    }
+    
     // Extract return type
     extract_return_type(signature, func->return_type);
     
@@ -313,10 +323,17 @@ void parse_function_parameters(const char *signature, function_t *func) {
     char *param_token = strtok(param_copy, ",");
     
     while (param_token && func->param_count < 10) {
-        parse_parameter(param_token, &func->parsed_params[func->param_count]);
-        if (strlen(func->parsed_params[func->param_count].name) > 0) {
-            func->param_count++;
+        trim_whitespace(param_token);  // Clean up the token
+        
+        if (strlen(param_token) > 0) {  // Only parse non-empty tokens
+            parse_parameter(param_token, &func->parsed_params[func->param_count]);
+            
+            // Only increment if we successfully parsed a parameter with a name
+            if (strlen(func->parsed_params[func->param_count].name) > 0) {
+                func->param_count++;
+            }
         }
+        
         param_token = strtok(NULL, ",");
     }
     
@@ -335,11 +352,15 @@ void generate_parameter_documentation(function_t *func, char *output) {
     for (int i = 0; i < func->param_count; i++) {
         parameter_t *param = &func->parsed_params[i];
         
-        // Use safer string concatenation
-        char param_line[MAX_CONTENT_LENGTH];
+        // Skip empty parameters
+        if (strlen(param->name) == 0) continue;
+        
+        // Use safer string concatenation with smaller buffer
+        char param_line[256];  // Smaller buffer to avoid warnings
         
         // Format: @param name (type) - description
-        int written = snprintf(param_line, sizeof(param_line), "@param %s (%s%s%s%s) - %s",
+        int remaining = sizeof(param_line) - 1;
+        int written = snprintf(param_line, remaining, "@param %s (%s%s%s%s) - %s",
                 param->name,
                 param->is_const ? "const " : "",
                 param->type,
@@ -347,15 +368,25 @@ void generate_parameter_documentation(function_t *func, char *output) {
                 param->is_array ? "[]" : "",
                 param->description);
         
-        if (written < 0 || written >= sizeof(param_line)) {
+        if (written < 0 || written >= remaining) {
             // Truncation occurred, use a simpler format
-            snprintf(param_line, sizeof(param_line), "@param %s - %s", param->name, param->description);
+            snprintf(param_line, sizeof(param_line), "@param %s - %s", 
+                    param->name, 
+                    strlen(param->description) > 0 ? param->description : "Parameter");
         }
         
-        if (strlen(output) > 0) {
-            strncat(output, "\n", MAX_CONTENT_LENGTH - strlen(output) - 1);
+        // Check if we have room to add this parameter
+        int output_len = strlen(output);
+        int needed = strlen(param_line) + (output_len > 0 ? 1 : 0);  // +1 for newline
+        
+        if (output_len + needed < MAX_CONTENT_LENGTH - 1) {
+            if (output_len > 0) {
+                strcat(output, "\n");
+            }
+            strcat(output, param_line);
+        } else {
+            break;  // No more room
         }
-        strncat(output, param_line, MAX_CONTENT_LENGTH - strlen(output) - 1);
     }
 }
 
@@ -437,6 +468,9 @@ void parse_c_file(const char *filepath, source_file_t *file) {
         if (is_function_line(line, filepath)) {
             function_t *func = &file->functions[file->function_count];
             
+            // Initialize the entire function structure to zero
+            memset(func, 0, sizeof(function_t));
+            
             // Store signature
             strncpy(func->signature, line, MAX_NAME_LENGTH - 1);
             func->signature[MAX_NAME_LENGTH - 1] = '\0';
@@ -447,11 +481,12 @@ void parse_c_file(const char *filepath, source_file_t *file) {
                 func->filename[MAX_PATH_LENGTH - 1] = '\0';
                 func->line_number = line_num;
                 func->is_documented = 0;
+                func->param_count = 0;  // Explicitly set to 0
                 
                 // Parse function parameters automatically
                 parse_function_parameters(line, func);
                 
-                // Initialize documentation fields
+                // Initialize documentation fields (already done by memset, but being explicit)
                 strcpy(func->description, "");
                 strcpy(func->return_value, "");
                 strcpy(func->example, "");
