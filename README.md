@@ -16,7 +16,7 @@ A terminal-based interactive documentation tool for C projects. DOK helps you cr
 ## Installation
 
 ```bash
-git clone https://github.com/yourusername/dok.git
+git clone https://github.com/OscarJ12/dok.git
 cd dok
 gcc -o dok dok.c
 ```
