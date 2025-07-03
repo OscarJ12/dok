@@ -8,11 +8,11 @@
 #include <ctype.h>
 #include <regex.h>
 
-#define MAX_LINE_LENGTH 2048
-#define MAX_ITEMS 200
-#define MAX_NAME_LENGTH 256
-#define MAX_CONTENT_LENGTH 4096
-#define MAX_PATH_LENGTH 512
+#define MAX_LINE_LENGTH 1024
+#define MAX_ITEMS 100
+#define MAX_NAME_LENGTH 128
+#define MAX_CONTENT_LENGTH 512
+#define MAX_PATH_LENGTH 256
 #define DOCS_FILE ".project_docs.txt"
 
 // ANSI color codes
@@ -59,7 +59,7 @@ typedef struct {
     char notes[MAX_CONTENT_LENGTH];
     int is_documented;
     // Auto-parsed parameter information
-    parameter_t parsed_params[20];  // Support up to 20 parameters
+    parameter_t parsed_params[10];  // Reduced from 20 to 10
     int param_count;
     char return_type[MAX_NAME_LENGTH];
 } function_t;
@@ -72,8 +72,8 @@ typedef struct {
     int function_count;
 } source_file_t;
 
-// Global state
-typedef struct {
+// Global state - use static to control memory layout
+static struct {
     source_file_t files[MAX_ITEMS];
     int file_count;
     int current_file;
@@ -85,12 +85,10 @@ typedef struct {
     int search_count;
     function_t *undocumented_functions[MAX_ITEMS];
     int undocumented_count;
-} doc_system_t;
+} docs;
 
-doc_system_t docs;
-
-// Terminal handling
-struct termios orig_termios;
+// Terminal handling - make static
+static struct termios orig_termios;
 
 void disable_raw_mode() {
     tcsetattr(STDIN_FILENO, TCSAFLUSH, &orig_termios);
@@ -136,7 +134,8 @@ int is_c_file(const char *filename) {
 // Parse a single parameter string like "const char *name" or "int count"
 void parse_parameter(const char *param_str, parameter_t *param) {
     char temp[MAX_NAME_LENGTH];
-    strcpy(temp, param_str);
+    strncpy(temp, param_str, MAX_NAME_LENGTH - 1);
+    temp[MAX_NAME_LENGTH - 1] = '\0';
     trim_whitespace(temp);
     
     // Initialize parameter
@@ -162,9 +161,12 @@ void parse_parameter(const char *param_str, parameter_t *param) {
     
     // Make a copy for tokenization
     char *temp_copy = strdup(temp);
+    if (!temp_copy) return;
+    
     char *token = strtok(temp_copy, " \t");
     while (token && token_count < 10) {
         tokens[token_count] = strdup(token);
+        if (!tokens[token_count]) break;
         token_count++;
         token = strtok(NULL, " \t");
     }
@@ -192,13 +194,14 @@ void parse_parameter(const char *param_str, parameter_t *param) {
     }
     
     // Extract clean parameter name
-    strcpy(param->name, name_start);
+    strncpy(param->name, name_start, MAX_NAME_LENGTH - 1);
+    param->name[MAX_NAME_LENGTH - 1] = '\0';
     
     // Build type string from remaining tokens
     char type_str[MAX_NAME_LENGTH] = "";
     for (int i = 0; i < token_count - 1; i++) {
-        if (strlen(type_str) > 0) strcat(type_str, " ");
-        strcat(type_str, tokens[i]);
+        if (strlen(type_str) > 0) strncat(type_str, " ", MAX_NAME_LENGTH - strlen(type_str) - 1);
+        strncat(type_str, tokens[i], MAX_NAME_LENGTH - strlen(type_str) - 1);
     }
     
     // Add back pointer indicators that were in the type part
@@ -210,7 +213,8 @@ void parse_parameter(const char *param_str, parameter_t *param) {
         }
     }
     
-    strcpy(param->type, type_str);
+    strncpy(param->type, type_str, MAX_NAME_LENGTH - 1);
+    param->type[MAX_NAME_LENGTH - 1] = '\0';
     
     // Generate auto-description based on parameter name and type
     if (strstr(param->name, "count") || strstr(param->name, "size") || strstr(param->name, "len")) {
@@ -239,7 +243,8 @@ void parse_parameter(const char *param_str, parameter_t *param) {
 // Extract return type from function signature
 void extract_return_type(const char *signature, char *return_type) {
     char temp[MAX_NAME_LENGTH];
-    strcpy(temp, signature);
+    strncpy(temp, signature, MAX_NAME_LENGTH - 1);
+    temp[MAX_NAME_LENGTH - 1] = '\0';
     
     // Find the function name (before the opening parenthesis)
     char *paren = strchr(temp, '(');
@@ -267,7 +272,8 @@ void extract_return_type(const char *signature, char *return_type) {
     if (strlen(temp) == 0) {
         strcpy(return_type, "int");  // Default assumption
     } else {
-        strcpy(return_type, temp);
+        strncpy(return_type, temp, MAX_NAME_LENGTH - 1);
+        return_type[MAX_NAME_LENGTH - 1] = '\0';
     }
 }
 
@@ -302,9 +308,11 @@ void parse_function_parameters(const char *signature, function_t *func) {
     
     // Split by commas and parse each parameter
     char *param_copy = strdup(param_string);
+    if (!param_copy) return;
+    
     char *param_token = strtok(param_copy, ",");
     
-    while (param_token && func->param_count < 20) {
+    while (param_token && func->param_count < 10) {
         parse_parameter(param_token, &func->parsed_params[func->param_count]);
         if (strlen(func->parsed_params[func->param_count].name) > 0) {
             func->param_count++;
@@ -327,10 +335,11 @@ void generate_parameter_documentation(function_t *func, char *output) {
     for (int i = 0; i < func->param_count; i++) {
         parameter_t *param = &func->parsed_params[i];
         
+        // Use safer string concatenation
         char param_line[MAX_CONTENT_LENGTH];
         
         // Format: @param name (type) - description
-        snprintf(param_line, sizeof(param_line), "@param %s (%s%s%s%s) - %s",
+        int written = snprintf(param_line, sizeof(param_line), "@param %s (%s%s%s%s) - %s",
                 param->name,
                 param->is_const ? "const " : "",
                 param->type,
@@ -338,10 +347,15 @@ void generate_parameter_documentation(function_t *func, char *output) {
                 param->is_array ? "[]" : "",
                 param->description);
         
-        if (strlen(output) > 0) {
-            strcat(output, "\n");
+        if (written < 0 || written >= sizeof(param_line)) {
+            // Truncation occurred, use a simpler format
+            snprintf(param_line, sizeof(param_line), "@param %s - %s", param->name, param->description);
         }
-        strcat(output, param_line);
+        
+        if (strlen(output) > 0) {
+            strncat(output, "\n", MAX_CONTENT_LENGTH - strlen(output) - 1);
+        }
+        strncat(output, param_line, MAX_CONTENT_LENGTH - strlen(output) - 1);
     }
 }
 
@@ -387,6 +401,8 @@ int is_function_line(const char *line, const char *filename) {
     if (line[0] == ' ' || line[0] == '\t') return 0;
     
     char *trimmed = strdup(line);
+    if (!trimmed) return 0;
+    
     trim_whitespace(trimmed);
     
     // For .h files, accept both declarations (ending with ;) and definitions
@@ -427,7 +443,8 @@ void parse_c_file(const char *filepath, source_file_t *file) {
             
             // Extract function name
             if (extract_function_name(line, func->name)) {
-                strcpy(func->filename, file->filename);
+                strncpy(func->filename, file->filename, MAX_PATH_LENGTH - 1);
+                func->filename[MAX_PATH_LENGTH - 1] = '\0';
                 func->line_number = line_num;
                 func->is_documented = 0;
                 
@@ -461,8 +478,10 @@ void scan_project_files() {
     while ((entry = readdir(dir)) != NULL && docs.file_count < MAX_ITEMS) {
         if (is_c_file(entry->d_name)) {
             source_file_t *file = &docs.files[docs.file_count];
-            strcpy(file->filename, entry->d_name);
-            strcpy(file->full_path, entry->d_name);
+            strncpy(file->filename, entry->d_name, MAX_PATH_LENGTH - 1);
+            file->filename[MAX_PATH_LENGTH - 1] = '\0';
+            strncpy(file->full_path, entry->d_name, MAX_PATH_LENGTH - 1);
+            file->full_path[MAX_PATH_LENGTH - 1] = '\0';
             
             parse_c_file(entry->d_name, file);
             
@@ -517,9 +536,11 @@ void load_documentation() {
         trim_whitespace(line);
         
         if (strncmp(line, "FUNCTION: ", 10) == 0) {
-            strcpy(current_func_name, line + 10);
+            strncpy(current_func_name, line + 10, MAX_NAME_LENGTH - 1);
+            current_func_name[MAX_NAME_LENGTH - 1] = '\0';
         } else if (strncmp(line, "FILE: ", 6) == 0) {
-            strcpy(current_filename, line + 6);
+            strncpy(current_filename, line + 6, MAX_PATH_LENGTH - 1);
+            current_filename[MAX_PATH_LENGTH - 1] = '\0';
         } else if (strlen(current_func_name) > 0 && strlen(current_filename) > 0) {
             // Find the function in our parsed data
             function_t *func = NULL;
@@ -537,16 +558,21 @@ void load_documentation() {
             
             if (func) {
                 if (strncmp(line, "DESCRIPTION: ", 13) == 0) {
-                    strcpy(func->description, line + 13);
+                    strncpy(func->description, line + 13, MAX_CONTENT_LENGTH - 1);
+                    func->description[MAX_CONTENT_LENGTH - 1] = '\0';
                     func->is_documented = 1;
                 } else if (strncmp(line, "PARAMETERS: ", 12) == 0) {
-                    strcpy(func->parameters, line + 12);
+                    strncpy(func->parameters, line + 12, MAX_CONTENT_LENGTH - 1);
+                    func->parameters[MAX_CONTENT_LENGTH - 1] = '\0';
                 } else if (strncmp(line, "RETURN: ", 8) == 0) {
-                    strcpy(func->return_value, line + 8);
+                    strncpy(func->return_value, line + 8, MAX_CONTENT_LENGTH - 1);
+                    func->return_value[MAX_CONTENT_LENGTH - 1] = '\0';
                 } else if (strncmp(line, "EXAMPLE: ", 9) == 0) {
-                    strcpy(func->example, line + 9);
+                    strncpy(func->example, line + 9, MAX_CONTENT_LENGTH - 1);
+                    func->example[MAX_CONTENT_LENGTH - 1] = '\0';
                 } else if (strncmp(line, "NOTES: ", 7) == 0) {
-                    strcpy(func->notes, line + 7);
+                    strncpy(func->notes, line + 7, MAX_CONTENT_LENGTH - 1);
+                    func->notes[MAX_CONTENT_LENGTH - 1] = '\0';
                 } else if (strcmp(line, "---") == 0) {
                     strcpy(current_func_name, "");
                     strcpy(current_filename, "");
@@ -590,9 +616,9 @@ void find_undocumented_functions() {
 
 // Display functions
 void display_header() {
-    printf(BOLD CYAN "═══════════════════════════════════════════════════════════════════════════════\n");
-    printf("                      DYNAMIC C PROJECT DOCUMENTATION                        \n");
-    printf("═══════════════════════════════════════════════════════════════════════════════\n" RESET);
+    printf(BOLD CYAN "════════════════════════════════════════════════════════════════════════\n");
+    printf("                    DYNAMIC C PROJECT DOCUMENTATION                    \n");
+    printf("════════════════════════════════════════════════════════════════════════\n" RESET);
 }
 
 void display_stats() {
@@ -840,12 +866,14 @@ void print_function_source(function_t *func) {
             
             // For header files, if line ends with semicolon, it's just a declaration
             char *trimmed = strdup(line);
-            trim_whitespace(trimmed);
-            if (is_header && strlen(trimmed) > 0 && trimmed[strlen(trimmed)-1] == ';') {
+            if (trimmed) {
+                trim_whitespace(trimmed);
+                if (is_header && strlen(trimmed) > 0 && trimmed[strlen(trimmed)-1] == ';') {
+                    free(trimmed);
+                    break; // Just show the declaration line
+                }
                 free(trimmed);
-                break; // Just show the declaration line
             }
-            free(trimmed);
             
             // Count braces in the function signature line
             for (char *p = line; *p; p++) {
@@ -896,9 +924,9 @@ void print_file_documentation(source_file_t *file) {
     for (int i = 0; i < file->function_count; i++) {
         function_t *func = &file->functions[i];
         
-        printf("═══════════════════════════════════════════════════════════════════════════════\n");
+        printf("════════════════════════════════════════════════════════════════════════\n");
         printf(BOLD CYAN "FUNCTION: %s" RESET " (Line %d)\n", func->name, func->line_number);
-        printf("═══════════════════════════════════════════════════════════════════════════════\n");
+        printf("════════════════════════════════════════════════════════════════════════\n");
         
         // Show source code
         print_function_source(func);
@@ -936,9 +964,9 @@ void print_file_documentation(source_file_t *file) {
         }
     }
     
-    printf("═══════════════════════════════════════════════════════════════════════════════\n");
+    printf("════════════════════════════════════════════════════════════════════════\n");
     printf(BOLD GREEN "END OF DOCUMENTATION FOR %s\n" RESET, file->filename);
-    printf("═══════════════════════════════════════════════════════════════════════════════\n");
+    printf("════════════════════════════════════════════════════════════════════════\n");
     printf("\nPress any key to continue...");
     getchar();
 }
@@ -975,35 +1003,40 @@ void edit_function_documentation(function_t *func) {
     printf(BOLD "Current description:" RESET " %s\n", func->description);
     get_string_input("New description: ", temp_buffer, MAX_CONTENT_LENGTH);
     if (strlen(temp_buffer) > 0) {
-        strcpy(func->description, temp_buffer);
+        strncpy(func->description, temp_buffer, MAX_CONTENT_LENGTH - 1);
+        func->description[MAX_CONTENT_LENGTH - 1] = '\0';
     }
     
     // Parameters
     printf(BOLD "\nCurrent parameters:" RESET " %s\n", func->parameters);
     get_string_input("New parameters: ", temp_buffer, MAX_CONTENT_LENGTH);
     if (strlen(temp_buffer) > 0) {
-        strcpy(func->parameters, temp_buffer);
+        strncpy(func->parameters, temp_buffer, MAX_CONTENT_LENGTH - 1);
+        func->parameters[MAX_CONTENT_LENGTH - 1] = '\0';
     }
     
     // Return value
     printf(BOLD "\nCurrent return value:" RESET " %s\n", func->return_value);
     get_string_input("New return value: ", temp_buffer, MAX_CONTENT_LENGTH);
     if (strlen(temp_buffer) > 0) {
-        strcpy(func->return_value, temp_buffer);
+        strncpy(func->return_value, temp_buffer, MAX_CONTENT_LENGTH - 1);
+        func->return_value[MAX_CONTENT_LENGTH - 1] = '\0';
     }
     
     // Example
     printf(BOLD "\nCurrent example:" RESET " %s\n", func->example);
     get_string_input("New example: ", temp_buffer, MAX_CONTENT_LENGTH);
     if (strlen(temp_buffer) > 0) {
-        strcpy(func->example, temp_buffer);
+        strncpy(func->example, temp_buffer, MAX_CONTENT_LENGTH - 1);
+        func->example[MAX_CONTENT_LENGTH - 1] = '\0';
     }
     
     // Notes
     printf(BOLD "\nCurrent notes:" RESET " %s\n", func->notes);
     get_string_input("New notes: ", temp_buffer, MAX_CONTENT_LENGTH);
     if (strlen(temp_buffer) > 0) {
-        strcpy(func->notes, temp_buffer);
+        strncpy(func->notes, temp_buffer, MAX_CONTENT_LENGTH - 1);
+        func->notes[MAX_CONTENT_LENGTH - 1] = '\0';
     }
     
     func->is_documented = 1;
